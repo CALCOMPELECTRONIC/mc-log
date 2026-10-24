@@ -44,6 +44,10 @@ textarea{min-height:84px;resize:vertical}
 .err{background:#FDECEA;color:#B71C1C;padding:16px;border-radius:10px;margin:14px}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(80px);background:#1A202C;color:#fff;padding:11px 18px;border-radius:10px;font-size:14px;opacity:0;transition:.3s;z-index:9;max-width:90vw}
 .toast.show{transform:translateX(-50%);opacity:1}
+.prevs{display:flex;gap:8px;flex-wrap:wrap}
+.pv{position:relative}
+.pv button{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border:none;border-radius:50%;background:var(--ng);color:#fff;font-size:12px;line-height:20px;padding:0;cursor:pointer}
+.item-d img.big{margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -58,12 +62,11 @@ textarea{min-height:84px;resize:vertical}
       <label data-t="question"></label><textarea id="fQ"></textarea>
       <label data-t="photo"></label>
       <div class="photo-row">
-        <input type="file" id="fPhoto" accept="image/*" capture="environment" hidden>
+        <input type="file" id="fPhoto" accept="image/*" multiple hidden>
         <button class="btn btn-o" type="button" onclick="$('fPhoto').click()" data-t="takePhoto"></button>
-        <img id="prev" class="thumb" style="display:none" alt="">
-        <button class="btn btn-o" id="rmPhoto" type="button" style="display:none" onclick="clearPhoto()">✕</button>
+        <div id="prevs" class="prevs"></div>
       </div>
-      <label data-t="solution"></label><textarea id="fS"></textarea>
+            <label data-t="solution"></label><textarea id="fS"></textarea>
       <label data-t="status"></label>
       <select id="fSt"><option value="OK">OK</option><option value="NG">NG</option><option value="GO">On going</option></select>
       <label data-t="reporter"></label><input type="text" id="fBy" autocomplete="name">
@@ -94,7 +97,7 @@ const Store = {
       .sort((a,b) => a.createdAt < b.createdAt ? -1 : 1);
   },
   getPhoto(c,id){ return this._get('machines/'+c+'/photos/'+id); },
-  addIssue(c,d){ return this._post({type:'new', machine:c, question:d.question, solution:d.solution, status:d.status, photo:d.photo||'', by:d.by}); },
+  addIssue(c,d){ return this._post({type:'new', machine:c, question:d.question, solution:d.solution, status:d.status, photo:(d.photos[0]||''), photos:d.photos, by:d.by}); },
   updateStatus(c,id,status,by){ return this._post({type:'status', machine:c, issueKey:id, status:status, by:by}); }
 };
 
@@ -114,7 +117,7 @@ const T = {
 };
 const STNAME = {OK:'OK', NG:'NG', GO:'On going'};
 let lang = localStorage.getItem('lang') || 'th';
-let machine = null, issues = [], filter = 'ALL', photoData = null, openId = null, sig = '';
+let machine = null, issues = [], filter = 'ALL', openId = null, sig = '';
 let pendingNew = [], pendingSt = {}, photoCache = {};
 
 const $ = id => document.getElementById(id);
@@ -141,12 +144,26 @@ function compress(file, maxSide = 800, q = 0.6){
     fr.readAsDataURL(file);
   });
 }
+const MAX_PHOTOS = 5;
+let photos = [];
+const toArr = v => !v ? [] : (typeof v === 'string' ? [v] : Object.values(v));
+
 $('fPhoto').addEventListener('change', async e => {
-  const f = e.target.files[0]; if(!f) return;
-  try { photoData = await compress(f); $('prev').src = photoData; $('prev').style.display = ''; $('rmPhoto').style.display = ''; }
-  catch(err){ toast(t('photoErr')); }
+  const files = Array.from(e.target.files || []);
+  for (const f of files) {
+    if (photos.length >= MAX_PHOTOS) { toast('Max ' + MAX_PHOTOS); break; }
+    try { photos.push(await compress(f, 720, 0.6)); }
+    catch(err){ toast(t('photoErr')); }
+  }
+  e.target.value = '';
+  renderPrev();
 });
-function clearPhoto(){ photoData = null; $('fPhoto').value = ''; $('prev').style.display = 'none'; $('rmPhoto').style.display = 'none'; }
+function renderPrev(){
+  $('prevs').innerHTML = photos.map((p, i) =>
+    `<div class="pv"><img class="thumb" src="${p}" alt=""><button type="button" onclick="removePhoto(${i})">×</button></div>`).join('');
+}
+function removePhoto(i){ photos.splice(i, 1); renderPrev(); }
+function clearPhoto(){ photos = []; $('fPhoto').value = ''; renderPrev(); }
 
 async function apply(){
   const q = $('fQ').value.trim(), by = $('fBy').value.trim();
@@ -154,9 +171,9 @@ async function apply(){
   if(!by){ toast(t('needBy')); $('fBy').focus(); return; }
   $('btnApply').disabled = true;
   try {
-    const d = {question:q, solution:$('fS').value.trim(), status:$('fSt').value, photo:photoData, by:by};
+    const d = {question:q, solution:$('fS').value.trim(), status:$('fSt').value, photos:photos.slice(), by:by};
     const key = await Store.addIssue(machine.code, d);
-    pendingNew.push({id:key, question:d.question, solution:d.solution, status:d.status, photo:d.photo, by:by, createdAt:new Date().toISOString(), log:[], pending:true});
+    pendingNew.push({id:key, question:d.question, solution:d.solution, status:d.status, photos:d.photos, by:by, createdAt:new Date().toISOString(), log:[], pending:true});
     localStorage.setItem('reporter', by);
     $('fQ').value = ''; $('fS').value = ''; $('fSt').value = 'OK'; clearPhoto();
     toast(t('saved')); sig = ''; await reload();
@@ -187,8 +204,9 @@ function renderList(){
     const no = view.indexOf(i) + 1;
     const opts = ['OK','NG','GO'].map(s => `<option value="${s}" ${i.status===s?'selected':''}>${STNAME[s]}</option>`).join('');
     const log = (i.log||[]).map(l => `${fmt(l.at)} · ${esc(l.by)}: ${STNAME[l.from]} → ${STNAME[l.to]}`).join('<br>');
-    const ph = i.photo || photoCache[i.id];
-    const photo = ph ? `<img class="big" src="${ph}" alt="">` : `<div class="k">${i.hasPhoto ? t('loading') : t('noPhoto')}</div>`;
+    const arr = toArr(i.photos || i.photo || photoCache[i.id]);
+    const photo = arr.length ? arr.map(p => `<img class="big" src="${p}" alt="">`).join('')
+                             : `<div class="k">${i.hasPhoto ? t('loading') : t('noPhoto')}</div>`;
     return `<div class="item ${openId===i.id?'open':''}">
       <div class="item-h" onclick="toggle('${i.id}')">
         <span class="n">#${no}</span>
@@ -207,7 +225,7 @@ async function toggle(id){
   openId = (openId === id) ? null : id; renderList();
   const it = issues.find(i => i.id === id);
   if(openId && it && it.hasPhoto && !photoCache[id]){
-    try { photoCache[id] = await Store.getPhoto(machine.code, id); renderList(); } catch(e){}
+    try { photoCache[id] = toArr(await Store.getPhoto(machine.code, id)); renderList(); } catch(e){}
   }
 }
 async function changeStatus(id){
